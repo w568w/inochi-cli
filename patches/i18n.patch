@@ -1,0 +1,42 @@
+diff --git a/source/i18n/culture.d b/source/i18n/culture.d
+index 1d0cfdc..c9b0d5d 100644
+--- a/source/i18n/culture.d
++++ b/source/i18n/culture.d
+@@ -930,7 +930,7 @@ LocaleConv i18nGetLocaleConversions() {
+     import core.stdc.locale : localeconv, lconv;
+     import std.string : fromStringz;
+     lconv* conv = localeconv();
+-    return LocaleConv(
++    auto result = LocaleConv(
+         cast(string)conv.decimal_point.fromStringz,
+         cast(string)conv.thousands_sep.fromStringz,
+         cast(string)conv.grouping.fromStringz,
+@@ -949,11 +949,21 @@ LocaleConv i18nGetLocaleConversions() {
+         conv.n_sep_by_space,
+         conv.p_sign_posn,
+         conv.n_sign_posn,
+-        conv.int_p_cs_precedes,
+-        conv.int_p_sep_by_space,
+-        conv.int_n_cs_precedes,
+-        conv.int_n_sep_by_space,
+-        conv.int_p_sign_posn,
+-        conv.int_n_sign_posn
++        conv.p_cs_precedes,
++        conv.p_sep_by_space,
++        conv.n_cs_precedes,
++        conv.n_sep_by_space,
++        conv.p_sign_posn,
++        conv.n_sign_posn
+     );
++    // Some C runtimes expose only the national monetary-formatting fields.
++    static if (__traits(hasMember, lconv, "int_p_cs_precedes")) {
++        result.intPCSPrecedes = conv.int_p_cs_precedes;
++        result.intP_sep_by_space = conv.int_p_sep_by_space;
++        result.intNCSPrecedes = conv.int_n_cs_precedes;
++        result.intNSepBySpace = conv.int_n_sep_by_space;
++        result.intPSignPosN = conv.int_p_sign_posn;
++        result.intNSignPosN = conv.int_n_sign_posn;
++    }
++    return result;
+ }
+\ No newline at end of file

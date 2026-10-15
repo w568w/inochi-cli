@@ -63,6 +63,15 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Install
         run: cmake --install build --prefix "$PWD/stage"
+      - name: Diagnose macOS startup
+        if: runner.os == 'macOS'
+        run: |
+          stage/bin/inochi capabilities --json > capabilities.json &
+          pid=$!
+          sleep 5
+          sample "$pid" 1 -file startup-sample.txt || true
+          cat startup-sample.txt || true
+          kill "$pid" || true
       - name: Smoke test
         timeout-minutes: 1
         run: stage/bin/inochi capabilities --json > capabilities.json

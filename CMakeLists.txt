@@ -14,7 +14,8 @@ FetchContent_Declare(creator GIT_REPOSITORY https://github.com/Inochi2D/inochi-c
 FetchContent_Declare(sdk GIT_REPOSITORY https://github.com/Inochi2D/inochi2d.git GIT_TAG dda3a8f005f808104caa43183ab8753fb989e30f GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/sdk.patch)
 FetchContent_Declare(bindings GIT_REPOSITORY https://github.com/Inochi2D/i2d-imgui.git GIT_TAG c6a78f4a7510fd31a86998b7ceedfc2916ecfae0 GIT_SUBMODULES "" SOURCE_SUBDIR source)
 FetchContent_Declare(cimgui GIT_REPOSITORY https://github.com/Inochi2D/cimgui.git GIT_TAG bb241882da8294b648ac1f9be1aca0421eaa4191 GIT_SUBMODULES imgui SOURCE_SUBDIR source)
-FetchContent_MakeAvailable(creator sdk bindings cimgui)
+FetchContent_Declare(i18n GIT_REPOSITORY https://github.com/KitsunebiGames/i18n.git GIT_TAG 75c57ea0889d459b73765d932aec02f9b3e71b80 GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/i18n.patch)
+FetchContent_MakeAvailable(creator sdk bindings cimgui i18n)
 set(imgui_SOURCE_DIR "${cimgui_SOURCE_DIR}/imgui")
 
 add_library(inochi-native SHARED
@@ -45,7 +46,7 @@ add_custom_target(inochi ALL COMMAND ${DUB} build --root=${CMAKE_CURRENT_BINARY_
 install(TARGETS inochi-native RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/inochi${CMAKE_EXECUTABLE_SUFFIX}" DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES LICENSE CONTRIBUTORS.md DESTINATION ${CMAKE_INSTALL_DATADIR}/inochi)
-foreach(upstream IN ITEMS sdk bindings cimgui imgui)
+foreach(upstream IN ITEMS sdk bindings cimgui imgui i18n)
     file(GLOB licenses "${${upstream}_SOURCE_DIR}/LICENSE*")
     install(FILES ${licenses} DESTINATION ${CMAKE_INSTALL_DATADIR}/inochi/licenses/${upstream})
 endforeach()
