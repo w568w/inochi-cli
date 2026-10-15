@@ -61,7 +61,7 @@ jobs:
           if [[ "$RUNNER_OS" != Linux ]]; then
             export CMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           fi
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=${{ runner.os == 'Linux' }} -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=${{ runner.os == 'Linux' }} -DVCPKG_TARGET_TRIPLET="$VCPKG_DEFAULT_TRIPLET" -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test
