@@ -20,23 +20,15 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
-            tests: 'ON'
-            install: sudo apt-get update && sudo apt-get install -y libsdl2-dev libfreetype6-dev libgl1-mesa-dev libdbus-1-dev xvfb xauth ffmpeg
           - os: windows-2022
             platform: windows-x86_64
-            tests: 'OFF'
             triplet: x64-windows
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
           - os: macos-15
             platform: macos-arm64
-            tests: 'OFF'
             triplet: arm64-osx-dynamic
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=arm64-osx-dynamic -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
           - os: macos-15-intel
             platform: macos-x86_64
-            tests: 'OFF'
             triplet: x64-osx-dynamic
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-osx-dynamic -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
     defaults:
@@ -51,7 +43,7 @@ jobs:
           compiler: ldc-1.43.0
       - name: Install native dependencies
         if: runner.os == 'Linux'
-        run: ${{ matrix.install }}
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libfreetype6-dev libgl1-mesa-dev libdbus-1-dev xvfb xauth ffmpeg
       - uses: lukka/run-vcpkg@v11
         if: runner.os != 'Linux'
         with:
@@ -65,7 +57,11 @@ jobs:
         if: runner.os == 'Linux'
         run: python -m pip install Pillow psutil
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=${{ matrix.tests }} ${{ matrix.cmake }}
+        run: |
+          if [[ "$RUNNER_OS" != Linux ]]; then
+            export CMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=${{ runner.os == 'Linux' }} -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test

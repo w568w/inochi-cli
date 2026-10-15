@@ -12,10 +12,10 @@ find_package(OpenGL REQUIRED)
 # Creator and SDK share a fixed format/algorithm baseline; only their patches vary.
 FetchContent_Declare(creator GIT_REPOSITORY https://github.com/Inochi2D/inochi-creator.git GIT_TAG 371e5f4e21117102dbecc82371bfd9a6e2f5df02 GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/creator.patch)
 FetchContent_Declare(sdk GIT_REPOSITORY https://github.com/Inochi2D/inochi2d.git GIT_TAG dda3a8f005f808104caa43183ab8753fb989e30f GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/sdk.patch)
-FetchContent_Declare(bindings GIT_REPOSITORY https://github.com/Inochi2D/i2d-imgui.git GIT_TAG c6a78f4a7510fd31a86998b7ceedfc2916ecfae0 GIT_SUBMODULES "" SOURCE_SUBDIR source)
-FetchContent_Declare(cimgui GIT_REPOSITORY https://github.com/Inochi2D/cimgui.git GIT_TAG bb241882da8294b648ac1f9be1aca0421eaa4191 GIT_SUBMODULES imgui SOURCE_SUBDIR source)
+FetchContent_Declare(bindings GIT_REPOSITORY https://github.com/Inochi2D/i2d-imgui.git GIT_TAG c6a78f4a7510fd31a86998b7ceedfc2916ecfae0 GIT_SUBMODULES deps/cimgui SOURCE_SUBDIR source)
 FetchContent_Declare(i18n GIT_REPOSITORY https://github.com/KitsunebiGames/i18n.git GIT_TAG 75c57ea0889d459b73765d932aec02f9b3e71b80 GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/i18n.patch)
-FetchContent_MakeAvailable(creator sdk bindings cimgui i18n)
+FetchContent_MakeAvailable(creator sdk bindings i18n)
+set(cimgui_SOURCE_DIR "${bindings_SOURCE_DIR}/deps/cimgui")
 set(imgui_SOURCE_DIR "${cimgui_SOURCE_DIR}/imgui")
 
 add_library(inochi-native SHARED
@@ -23,15 +23,12 @@ add_library(inochi-native SHARED
     ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_demo.cpp ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
     ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
 target_compile_features(inochi-native PRIVATE cxx_std_17)
 target_include_directories(inochi-native PRIVATE ${cimgui_SOURCE_DIR} ${imgui_SOURCE_DIR})
-target_compile_definitions(inochi-native PRIVATE IMGUI_ENABLE_FREETYPE IMGUI_ENABLE_STB_TRUETYPE IMGUI_IMPL_BACKEND_SDL2 IMGUI_IMPL_BACKEND_OPENGL3 "IMGUI_IMPL_API=extern \"C\" $<$<PLATFORM_ID:Windows>:__declspec(dllexport)>")
-if(NOT WIN32)
-    target_compile_definitions(inochi-native PRIVATE __cdecl=)
-endif()
+target_compile_definitions(inochi-native PRIVATE CIMGUI_FREETYPE IMGUI_ENABLE_FREETYPE IMGUI_ENABLE_STB_TRUETYPE "IMGUI_IMPL_API=extern \"C\" $<$<PLATFORM_ID:Windows>:__declspec(dllexport)>")
 target_link_libraries(inochi-native PRIVATE SDL2::SDL2 Freetype::Freetype OpenGL::GL "$<$<PLATFORM_ID:Windows>:imm32>")
 set_target_properties(inochi-native PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
 
