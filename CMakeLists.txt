@@ -28,12 +28,12 @@ add_library(inochi-native SHARED
     ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
 target_compile_features(inochi-native PRIVATE cxx_std_17)
 target_include_directories(inochi-native PRIVATE ${cimgui_SOURCE_DIR} ${imgui_SOURCE_DIR})
-target_compile_definitions(inochi-native PRIVATE IMGUI_ENABLE_FREETYPE IMGUI_ENABLE_STB_TRUETYPE IMGUI_IMPL_BACKEND_SDL2 IMGUI_IMPL_BACKEND_OPENGL3 "IMGUI_IMPL_API=extern \"C\"")
+target_compile_definitions(inochi-native PRIVATE IMGUI_ENABLE_FREETYPE IMGUI_ENABLE_STB_TRUETYPE IMGUI_IMPL_BACKEND_SDL2 IMGUI_IMPL_BACKEND_OPENGL3 "IMGUI_IMPL_API=extern \"C\" $<$<PLATFORM_ID:Windows>:__declspec(dllexport)>")
 if(NOT WIN32)
     target_compile_definitions(inochi-native PRIVATE __cdecl=)
 endif()
 target_link_libraries(inochi-native PRIVATE SDL2::SDL2 Freetype::Freetype OpenGL::GL "$<$<PLATFORM_ID:Windows>:imm32>")
-set_target_properties(inochi-native PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+set_target_properties(inochi-native PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
 
 # Dub links one native target; CMake owns its system-library dependencies.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

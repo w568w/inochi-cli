@@ -111,7 +111,9 @@ __gshared double clockTime;
 SDL_Window* window;
 SDL_GLContext glContext;
 void initGL() {
- enforce(loadSDL()!=sdlSupport.noLibrary,"SDL2 unavailable");
+ // The native library already links SDL; bind those symbols on POSIX.
+ version(Posix) auto sdl=loadSDL(null);else auto sdl=loadSDL();
+ enforce(sdl!=sdlSupport.noLibrary,"SDL2 unavailable");
  enforce(SDL_Init(SDL_INIT_VIDEO)==0,"SDL init: "~fromStringz(SDL_GetError()).idup);
  // macOS exposes 3.3 features through its forward-compatible 4.1 context.
  version(OSX){enum glMajor=4;enum glMinor=1;}else{enum glMajor=3;enum glMinor=3;}

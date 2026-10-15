@@ -25,16 +25,20 @@ jobs:
           - os: windows-2022
             platform: windows-x86_64
             tests: 'OFF'
-            install: vcpkg install sdl2:x64-windows freetype:x64-windows
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+            triplet: x64-windows
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
           - os: macos-15
             platform: macos-arm64
             tests: 'OFF'
-            install: brew install sdl2 freetype
+            triplet: arm64-osx-dynamic
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=arm64-osx-dynamic -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
           - os: macos-15-intel
             platform: macos-x86_64
             tests: 'OFF'
-            install: brew install sdl2 freetype
+            triplet: x64-osx-dynamic
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-osx-dynamic -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
+    env:
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
     defaults:
       run:
         shell: bash
@@ -46,7 +50,14 @@ jobs:
         with:
           compiler: ldc-1.43.0
       - name: Install native dependencies
+        if: runner.os == 'Linux'
         run: ${{ matrix.install }}
+      - uses: lukka/run-vcpkg@v11
+        if: runner.os != 'Linux'
+        with:
+          vcpkgDirectory: ${{ runner.temp }}/vcpkg
+          vcpkgJsonGlob: vcpkg.json
+          runVcpkgInstall: true
       - uses: actions/setup-python@v7
         if: runner.os == 'Linux'
         with:
@@ -63,15 +74,6 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Install
         run: cmake --install build --prefix "$PWD/stage"
-      - name: Diagnose macOS startup
-        if: runner.os == 'macOS'
-        run: |
-          stage/bin/inochi capabilities --json > capabilities.json &
-          pid=$!
-          sleep 5
-          sample "$pid" 1 -file startup-sample.txt || true
-          cat startup-sample.txt || true
-          kill "$pid" || true
       - name: Smoke test
         timeout-minutes: 1
         run: stage/bin/inochi capabilities --json > capabilities.json
