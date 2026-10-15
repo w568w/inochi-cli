@@ -1,0 +1,26 @@
+{
+  "name": "inochi-cli",
+  "description": "Native Inochi2D model editing and rendering",
+  "license": "BSD-2-Clause",
+  "targetType": "executable",
+  "targetName": "inochi",
+  "sourcePaths": ["@CMAKE_CURRENT_SOURCE_DIR@/source/cli", "@creator_SOURCE_DIR@/source", "@bindings_SOURCE_DIR@/source"],
+  "importPaths": ["@CMAKE_CURRENT_SOURCE_DIR@/source", "@creator_SOURCE_DIR@/source", "@bindings_SOURCE_DIR@/source"],
+  "stringImportPaths": ["@creator_SOURCE_DIR@/res", "@creator_SOURCE_DIR@"],
+  "versions": ["GL_33", "USE_SDL2", "SDL_208", "UseUIScaling", "InochiCLI", "BindImGui_Static", "BindImGui_Static_DynamicCRT"],
+  "sourceFiles": ["$<TARGET_LINKER_FILE:inochi-native>"],
+  "lflags-linux": ["-rpath=$$ORIGIN"],
+  "lflags-osx": ["-rpath", "@executable_path"],
+  "dflags-windows-ldc": ["-mscrtlib=msvcrt"],
+  "dependencies": {
+    @platform_dependencies@
+    "psd-d": "0.6.3", "inmath": "1.3.2", "kra-d": "0.5.6",
+    "tinyfiledialogs": "0.10.1", "facetrack-d": "0.8.0", "bindbc-sdl": "1.1.3",
+    "dcv:core": "0.3.0", "i18n-d": "1.0.2",
+    "inochi2d": {"path": "@sdk_SOURCE_DIR@"}, "i2d-opengl": "1.0.0"
+  },
+  "configurations": [
+    {"name": "cli"},
+    {"name": "native-actions", "targetName": "inochi-native-actions", "excludedSourceFiles": ["**/cli/main.d"], "sourceFiles": ["@CMAKE_CURRENT_SOURCE_DIR@/tests/native_actions.d"]}
+  ]
+}

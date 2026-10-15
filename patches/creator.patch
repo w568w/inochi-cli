@@ -1,0 +1,1567 @@
+diff --git a/res/shaders/atlassing.frag b/res/shaders/atlassing.frag
+index f01163a..72a3b95 100644
+--- a/res/shaders/atlassing.frag
++++ b/res/shaders/atlassing.frag
+@@ -5,8 +5,12 @@
+     Authors: Luna Nielsen
+ */
+ #version 330
++#ifdef GL_KHR_blend_equation_advanced
++#extension GL_KHR_blend_equation_advanced : enable
++layout(blend_support_all_equations) out;
++#endif
+ in vec2 texUVs;
+-out vec4 outAlbedo;
++layout(location = 0) out vec4 outAlbedo;
+ 
+ uniform sampler2D albedo;
+ uniform float opacity;
+diff --git a/source/creator/actions/node.d b/source/creator/actions/node.d
+index b67e465..18f1d6b 100644
+--- a/source/creator/actions/node.d
++++ b/source/creator/actions/node.d
+@@ -14,6 +14,7 @@ import i18n;
+ import std.exception;
+ import std.array: insertInPlace;
+ import std.algorithm.mutation: remove;
++import std.algorithm.searching: canFind;
+ 
+ /**
+     An action that happens when a node is changed
+@@ -159,13 +160,13 @@ public:
+ /**
+     An action that happens when a node is changed
+ */
+-class PartAddRemoveMaskAction(bool addAction = false) : Action {
++class PartAddRemoveMaskAction(bool addAction = false, TTarget = Part) : Action {
+ public:
+ 
+     /**
+         Previous parent of node
+     */
+-    Part target;
++    TTarget target;
+     MaskingMode mode;
+     size_t offset;
+     Drawable maskSrc;
+@@ -173,9 +174,10 @@ public:
+     /**
+         Creates a new node change action
+     */
+-    this(Drawable drawable, Part target, MaskingMode mode) {
++    this(Drawable drawable, TTarget target, MaskingMode mode) {
+         this.maskSrc = drawable;
+         this.target = target;
++        this.mode = mode;
+ 
+         if (addAction) {
+             offset = target.masks.length;
+@@ -333,18 +335,28 @@ void incAddChildWithHistory(Node n, Node to, string name=null) {
+ }
+ 
+ GroupAction incDeleteMaskOfNode(Node n, GroupAction group = null) {
+-    auto removedDrawables = incActivePuppet().findNodesType!Drawable(n);
+-    auto parts = incActivePuppet().findNodesType!Part(incActivePuppet().root);
+-    foreach (drawable; removedDrawables) {
+-        foreach (target; parts) {
+-            auto idx = target.getMaskIdx(drawable);
+-            if (idx >= 0) {
+-                if (group is null)
+-                    group = new GroupAction();
+-                group.addAction(new PartRemoveMaskAction(drawable, target, target.masks[idx].mode));
+-            }
++    auto puppet = incActivePuppet();
++    auto removedNodes = puppet.findNodesType!Node(n);
++    auto removedDrawables = puppet.findNodesType!Drawable(n);
++    foreach (parameter; puppet.parameters) foreach (binding; parameter.bindings.dup) {
++        if (!removedNodes.canFind(binding.getNode())) continue;
++        if (group is null) group = new GroupAction();
++        group.addAction(new ParameterBindingRemoveAction(parameter, binding));
++        parameter.removeBinding(binding);
++    }
++    void removeMasks(T)(T target) {
++        foreach (drawable; removedDrawables) {
++            auto index = target.getMaskIdx(drawable);
++            if (index < 0) continue;
++            if (group is null) group = new GroupAction();
++            group.addAction(new PartAddRemoveMaskAction!(false, T)(drawable, target, target.masks[index].mode));
+         }
+     }
++    foreach (target; puppet.findNodesType!Node(puppet.root)) {
++        if (removedNodes.canFind(target)) continue;
++        if (auto part = cast(Part)target) removeMasks(part);
++        else if (auto composite = cast(Composite)target) removeMasks(composite);
++    }
+     return group;
+ }
+ 
+@@ -376,7 +388,7 @@ void incDeleteChildWithHistory(Node n) {
+ void incDeleteChildrenWithHistory(Node[] ns) {
+     GroupAction group = null;
+     foreach (n; ns) {
+-        incDeleteMaskOfNode(n, group);
++        group = incDeleteMaskOfNode(n, group);
+     }
+     if (group !is null) {
+         // Push action to stack
+diff --git a/source/creator/actions/parameter.d b/source/creator/actions/parameter.d
+index 418cacd..59ead1f 100644
+--- a/source/creator/actions/parameter.d
++++ b/source/creator/actions/parameter.d
+@@ -14,6 +14,35 @@ import std.format;
+ import i18n;
+ import std.algorithm.searching: countUntil;
+ 
++/** Replaces a parameter while keeping graph references and its list position. */
++class ParameterReplaceAction : Action {
++    Parameter before, after;
++    this(Parameter before, Parameter after) {
++        this.before = before; this.after = after;
++        replace(before, after);
++    }
++    private void replace(Parameter source, Parameter target) {
++        auto puppet = cast(ExPuppet)incActivePuppet();
++        auto index = puppet.parameters.countUntil(source);
++        import std.exception : enforce;
++        enforce(index >= 0, "Parameter replacement source is missing");
++        puppet.parameters[index] = target;
++        if (auto old = cast(ExParameter)source) {
++            auto parent = old.parent;
++            old.setParent(null);
++            if (auto extended = cast(ExParameter)target) extended.setParent(parent);
++        }
++        puppet.remapParameterReferences(source, target);
++    }
++    void rollback() { replace(after, before); }
++    void redo() { replace(before, after); }
++    string describe() { return _("Converted %s to 2D").format(after.name); }
++    string describeUndo() { return _("Restored %s").format(before.name); }
++    string getName() { return "ParameterReplace"; }
++    bool merge(Action other) { return false; }
++    bool canMerge(Action other) { return false; }
++}
++
+ /**
+     Action to add parameter to active puppet.
+ */
+@@ -21,6 +50,7 @@ class ParameterAddRemoveAction(bool added = true) : Action {
+ public:
+     Parameter self;
+     Driver[] drivers;
++    ParameterReferenceState references;
+     Parameter[]* parentList;
+     ExParameterGroup originalParent;
+     long indexInGroup;
+@@ -28,6 +58,7 @@ public:
+     this(Parameter self, Parameter[]* parentList) {
+         this.self = self;
+         this.parentList = parentList;
++        references = (cast(ExPuppet)incActivePuppet()).captureParameterReferences(self);
+ 
+         auto exParam = cast(ExParameter)self;
+         originalParent = (exParam !is null)? exParam.getParent(): null;
+@@ -48,6 +79,7 @@ public:
+                 sf.param = null;
+             }
+         }
++        incActivePuppet().rescanNodes();
+     }
+ 
+     import std.stdio;
+@@ -66,6 +98,7 @@ public:
+             incActivePuppet().parameters ~= self;
+             if (exParam !is null)
+                 exParam.setParent(newParent);
++            (cast(ExPuppet)incActivePuppet()).restoreParameterReferences(references);
+         } else {
+ 
+             incActivePuppet().removeParameter(self);
+@@ -77,6 +110,7 @@ public:
+                 sf.param = self;
+             }
+         }
++        incActivePuppet().rescanNodes();
+     }
+ 
+     /**
+@@ -94,6 +128,7 @@ public:
+             incActivePuppet().parameters ~= self;
+             if (exParam !is null)
+                 exParam.setParent(newParent);
++            (cast(ExPuppet)incActivePuppet()).restoreParameterReferences(references);
+         } else {
+             incActivePuppet().removeParameter(self);
+         }
+@@ -104,6 +139,7 @@ public:
+                 sf.param = null;
+             }
+         }
++        incActivePuppet().rescanNodes();
+     }
+ 
+     /**
+diff --git a/source/creator/core/actionstack.d b/source/creator/core/actionstack.d
+index 3f4693e..b0008b7 100644
+--- a/source/creator/core/actionstack.d
++++ b/source/creator/core/actionstack.d
+@@ -26,7 +26,8 @@ enum ActionStackClear {
+     Initialize actions system
+ */
+ void incActionInit() {
+-    maxUndoHistory = incSettingsGet!size_t("MaxUndoHistory", 100);
++    version (InochiCLI) maxUndoHistory = 1000;
++    else maxUndoHistory = incSettingsGet!size_t("MaxUndoHistory", 100);
+     actions.length = currentLevel + 1;
+     actionPointer.length = currentLevel + 1;
+     actionIndex.length = currentLevel + 1;
+diff --git a/source/creator/ext/nodes/expart.d b/source/creator/ext/nodes/expart.d
+index 3423e48..80d77db 100644
+--- a/source/creator/ext/nodes/expart.d
++++ b/source/creator/ext/nodes/expart.d
+@@ -10,6 +10,7 @@ module creator.ext.nodes.expart;
+ import inochi2d.core.nodes.part;
+ import inochi2d.core.nodes;
+ import inochi2d.core;
++import inochi2d.core.texture : inGetTextureFromId;
+ import inochi2d.fmt.serialize;
+ import std.stdio : writeln;
+ import inochi2d.math;
+@@ -28,8 +29,23 @@ protected:
+     SerdeException deserializeFromFghj(Fghj data) {
+         auto err = super.deserializeFromFghj(data);
+         if (err) return err;
++        // The SDK skips empty slots without advancing the destination index.
++        // Restore each texture at its serialized usage index, including gaps.
++        if (!data["textures"].isEmpty) {
++            textures[] = null;
++            size_t index;
++            foreach (element; data["textures"].byElement) {
++                if (index >= textures.length) break;
++                uint id;
++                element.deserializeValue(id);
++                if (id != NO_TEXTURE) textures[index] = inGetTextureFromId(id);
++                index++;
++            }
++        }
+ 
+         if (!data["psdLayerPath"].isEmpty) data["psdLayerPath"].deserializeValue(layerPath);
++        // The 0.8.6 Part reader accidentally deserializes this field as tint.
++        if (!data["emissionStrength"].isEmpty) data["emissionStrength"].deserializeValue(emissionStrength);
+         return null;
+     }
+ 
+diff --git a/source/creator/ext/package.d b/source/creator/ext/package.d
+index 77d956e..4db61b0 100644
+--- a/source/creator/ext/package.d
++++ b/source/creator/ext/package.d
+@@ -8,11 +8,22 @@
+ module creator.ext;
+ public import creator.ext.nodes;
+ public import creator.ext.param;
++public import creator.ext.automation;
+ import inochi2d;
++import inochi2d.core.automation.phys : VerletNode;
+ 
+ import std.algorithm.searching : countUntil;
++import std.algorithm.iteration : filter;
++import std.array : array;
+ import std.algorithm.mutation : remove;
+ 
++struct ParameterReferenceState {
++    AnimationLane[][string] lanes;
++    AutomationBinding[][ExSineAutomation] sineBindings;
++    AutomationBinding[][ExPhysicsAutomation] physicsBindings;
++    VerletNode[][ExPhysicsAutomation] physicsNodes;
++}
++
+ class ExPuppet : Puppet {
+ private:
+ protected:
+@@ -60,11 +71,75 @@ public:
+     }
+     
+ 
++    ParameterReferenceState captureParameterReferences(Parameter source) {
++        ParameterReferenceState state;
++        foreach (name, animation; getAnimations()) {
++            foreach (lane; animation.lanes) if (lane.paramRef && lane.paramRef.targetParam is source) {
++                state.lanes[name] = animation.lanes.dup; break;
++            }
++        }
++        foreach (automation; this.automation) {
++            if (auto sine = cast(ExSineAutomation)automation) {
++                foreach (binding; sine.projectBindings) if (binding.param is source) {
++                    state.sineBindings[sine] = sine.projectBindings.dup; break;
++                }
++            } else if (auto physics = cast(ExPhysicsAutomation)automation) {
++                foreach (binding; physics.projectBindings) if (binding.param is source) {
++                    state.physicsBindings[physics] = physics.projectBindings.dup;
++                    state.physicsNodes[physics] = physics.nodes.dup; break;
++                }
++            }
++        }
++        return state;
++    }
++    void restoreParameterReferences(ParameterReferenceState state) {
++        foreach (name, lanes; state.lanes) if (auto animation = name in getAnimations()) animation.lanes = lanes.dup;
++        foreach (automation, bindings; state.sineBindings) automation.projectBindings = bindings.dup;
++        foreach (automation, bindings; state.physicsBindings) {
++            automation.projectBindings = bindings.dup;
++            automation.nodes = state.physicsNodes[automation].dup;
++        }
++        rescanNodes();
++    }
++
++    // Parameter replacement/deletion must update live graph objects before serialization.
++    void remapParameterReferences(Parameter source, Parameter target) {
++        void visit(Node node) {
++            if (auto driver = cast(SimplePhysics)node) if (driver.param is source) driver.param(target);
++            foreach (child; node.children) visit(child);
++        }
++        visit(root);
++        foreach (name, ref animation; getAnimations()) {
++            if (target is null) animation.lanes = animation.lanes.filter!(lane => !lane.paramRef || lane.paramRef.targetParam !is source).array;
++            else foreach (ref lane; animation.lanes) {
++                if (lane.paramRef && lane.paramRef.targetParam is source) lane.paramRef.targetParam = target;
++            }
++        }
++        void remapAutomation(T)(T automation) {
++            foreach_reverse (index; 0 .. automation.projectBindings.length) {
++                if (automation.projectBindings[index].param !is source) continue;
++                if (target !is null) {
++                    automation.projectBindings[index].param = target;
++                    automation.projectBindings[index].paramId = target.name;
++                } else {
++                    automation.projectBindings = automation.projectBindings.remove(index);
++                    static if (is(typeof(automation.nodes))) automation.nodes = automation.nodes.remove(index);
++                }
++            }
++        }
++        foreach (automation; this.automation) {
++            if (auto sine = cast(ExSineAutomation)automation) remapAutomation(sine);
++            else if (auto physics = cast(ExPhysicsAutomation)automation) remapAutomation(physics);
++        }
++        rescanNodes();
++    }
++
+     /**
+         Removes a parameter from this puppet
+     */
+     override
+     void removeParameter(Parameter param) {
++        remapParameterReferences(param, null);
+ 
+         // First attempt to remove from root
+         ptrdiff_t idx = parameters.countUntil(param);
+@@ -154,4 +229,5 @@ public:
+ void incInitExt() {
+     incInitExtNodes();
+     incRegisterExParameter();
++    incRegisterExAutomation();
+ }
+diff --git a/source/creator/ext/param.d b/source/creator/ext/param.d
+index 8a697dd..712b68f 100644
+--- a/source/creator/ext/param.d
++++ b/source/creator/ext/param.d
+@@ -17,7 +17,11 @@ protected:
+         serializer.putKey("name");
+         serializer.putValue(name);
+         serializer.putKey("color");
+-        serializer.serializeValue(color.vector);
++        // The 0.8.6 serializer double-quotes its nonfinite float sentinel.
++        // Store the canonical FGHJ sentinel for the UI's no-color palette entry.
++        auto colors=serializer.arrayBegin();
++        foreach(value;color.vector){serializer.elemBegin();if(value!=value)serializer.putValue("nan");else serializer.serializeValue(value);}
++        serializer.arrayEnd(colors);
+     }
+ 
+ public:
+@@ -146,7 +150,11 @@ public:
+ 
+         newParam.min = min;
+         newParam.max = max;
+-        newParam.axisPoints = axisPoints.dup;
++        newParam.defaults = defaults;
++        newParam.mergeMode = mergeMode;
++        newParam.value = value;
++        newParam.active = active;
++        foreach(axis;0..2)newParam.axisPoints[axis]=axisPoints[axis].dup;
+ 
+         foreach(binding; bindings) {
+             ParameterBinding newBinding = newParam.createBinding(
+@@ -181,3 +189,12 @@ void incRegisterExParameter() {
+     });
+ }
+ 
++
++ExParameter incCreateMouthShape(string name) {
++    auto param = new ExParameter(name, true);
++    param.min = vec2(-1, 0);
++    param.max = vec2(1, 1);
++    foreach(value; [0.25f, 0.5f, 0.6f]) param.insertAxisPoint(0, value);
++    foreach(value; [0.3f, 0.5f, 0.6f]) param.insertAxisPoint(1, value);
++    return param;
++}
+diff --git a/source/creator/io/inpexport.d b/source/creator/io/inpexport.d
+index af64f1f..4ba746f 100644
+--- a/source/creator/io/inpexport.d
++++ b/source/creator/io/inpexport.d
+@@ -202,7 +202,13 @@ void incINPExportDecorateWatermark(ref Atlas atlas, ref IncINPExportSettings set
+     if (settings.decorateWatermark && atlas.textures.length > 0) {
+         float loops = clamp(settings.decorateWatermarkLoops, 1, float.max);
+ 
+-        // TODO: Decorate the atlas with a watermark
++        import bindbc.opengl;
++        auto texture=settings.decorateWatermark;
++        texture.bind();GLint wrapS,wrapT;
++        glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,&wrapS);
++        glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,&wrapT);
++        scope(exit){texture.bind();glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,wrapS);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,wrapT);}
++        texture.setWrapping(Wrapping.Repeat);
+         atlas.renderOnTop(
+             0, 
+             settings.decorateWatermark, 
+@@ -287,6 +293,9 @@ Atlas[] incINPExportGenAtlasses(Puppet puppet, IncINPExportSettings settings) {
+         failed = true;
+     }
+ 
++    // The final atlas also needs decoration and mipmaps when packing succeeds.
++    incINPExportDecorateWatermark(atlasses[$-1], settings);
++    atlasses[$-1].finalize();
+     return atlasses;
+ }
+ 
+diff --git a/source/creator/io/videoexport.d b/source/creator/io/videoexport.d
+index f034558..77a10b6 100644
+--- a/source/creator/io/videoexport.d
++++ b/source/creator/io/videoexport.d
+@@ -230,6 +230,20 @@ public:
+     void end() {
+         this.ffmpegPipes.stdin.close();
+     }
++    void cancelCLI() {
++        import std.process : wait;
++        if (ffmpegPipes.pid is null) return;
++        try { ffmpegPipes.stdin.close(); } catch(Exception) { }
++        try { wait(ffmpegPipes.pid); } catch(Exception) { }
++        isAlive=false;
++    }
++    int finishCLI() {
++        import std.process : wait;
++        import std.exception : enforce;
++        enforce(isAlive, errors_);
++        this.ffmpegPipes.stdin.close();
++        return wait(this.ffmpegPipes.pid);
++    }
+ 
+     /**
+         Encoding progress
+diff --git a/source/creator/package.d b/source/creator/package.d
+index 16622b1..b7d14a8 100644
+--- a/source/creator/package.d
++++ b/source/creator/package.d
+@@ -169,6 +169,7 @@ void incInitAnimationPlayer(Puppet puppet) {
+     Creates a new project
+ */
+ void incNewProject() {
++    version (InochiCLI) { incSetCLIProject(new ExPuppet); return; }
+     incPopWelcomeWindow();
+ 
+     // Release lockfile, etc. from prev project
+@@ -334,7 +335,7 @@ void incImportFolder(string folder) {
+             auto tex = ShallowTexture(file);
+             inTexPremultiply(tex.data);
+ 
+-            Part part = inCreateSimplePart(new Texture(tex), null, file.baseName.stripExtension);
++            Part part = incCreateExPart(new Texture(tex), null, file.baseName.stripExtension);
+             part.zSort = -((cast(float)i++)/100);
+             puppet.root.addChild(part);
+         } catch(Exception ex) {
+@@ -567,6 +568,7 @@ bool incNodeInSelection(Node n) {
+     Focus camera at node
+ */
+ void incFocusCamera(Node node) {
++    version (InochiCLI) return;
+     import creator.viewport : incViewportTargetZoom, incViewportTargetPosition;
+     if (node is null) return;
+ 
+@@ -800,4 +802,13 @@ bool incAnimationKeyframeRemove(ref Parameter param, int axis) {
+     }
+ 
+     return false;
+-}
+\ No newline at end of file
++}
++version (InochiCLI) void incSetCLIProject(Puppet puppet) {
++    activeProject = new Project;
++    activeProject.puppet = puppet;
++    selectedNodes = [];
++    armedParam = null;
++    drawables = puppet.findNodesType!Drawable(puppet.root);
++    incInitAnimationPlayer(puppet);
++    editMode_ = EditMode.ModelEdit;
++}
+diff --git a/source/creator/panels/inspector.d b/source/creator/panels/inspector.d
+index 8ef2f30..c110f53 100644
+--- a/source/creator/panels/inspector.d
++++ b/source/creator/panels/inspector.d
+@@ -605,6 +605,25 @@ void incInspectorModelDrawable(Drawable node) {
+     incEndCategory();
+ }
+ 
++// Shared inspector operation; errors are handled by the calling UI or CLI.
++public void incApplyTextureToSlot(Part part, TextureUsage usage, string file) {
++    import std.path : extension;
++    import std.exception : enforce;
++    enforce([".png", ".tga", ".jpeg", ".jpg"].canFind(file.extension.toLower), "Unsupported texture format");
++    auto channels = usage == TextureUsage.Albedo ? 4 : 3;
++    auto texture = ShallowTexture(file, channels);
++    if (usage != TextureUsage.Albedo) {
++        enforce(part.textures[0] !is null, "Load an Albedo texture first");
++        enforce(texture.width == part.textures[0].width && texture.height == part.textures[0].height,
++                "Size of given texture does not match the Albedo texture.");
++    }
++    if (texture.convChannels == 4) inTexPremultiply(texture.data);
++    part.textures[usage] = new Texture(texture);
++    if (usage == TextureUsage.Albedo) foreach (ref other; part.textures[1..$]) {
++        if (other !is null && (other.width != texture.width || other.height != texture.height)) other = null;
++    }
++}
++
+ void incInspectorTextureSlot(Part p, TextureUsage usage, string title, ImVec2 elemSize) {
+     igPushID(p.uuid);
+     igPushID(cast(uint)usage);
+@@ -617,45 +636,9 @@ void incInspectorTextureSlot(Part p, TextureUsage usage, string title, ImVec2 el
+                 case ".png", ".tga", ".jpeg", ".jpg":
+ 
+                     try {
+-                        ShallowTexture tex;
+-                        switch(usage) {
+-                            case TextureUsage.Albedo:
+-                                tex = ShallowTexture(file, 4);
+-                                break;
+-                            case TextureUsage.Emissive:
+-                                tex = ShallowTexture(file, 3);
+-                                break;
+-                            case TextureUsage.Bumpmap:
+-                                tex = ShallowTexture(file, 3);
+-                                break;
+-                            default:
+-                                tex = ShallowTexture(file);
+-                                break;
+-                        }
+-
+-                        if (usage != TextureUsage.Albedo) {
+-
+-                            // Error out if post processing textures don't match
+-                            if (tex.width != p.textures[0].width || tex.height != p.textures[0].height) {
+-                                incDialog(__("Error"), _("Size of given texture does not match the Albedo texture."));
+-                                break;
+-                            }
+-                        }
+-
+-                        if (tex.convChannels == 4) {
+-                            inTexPremultiply(tex.data);
+-                        }
+-                        p.textures[usage] = new Texture(tex);
+-                        
+-                        if (usage == TextureUsage.Albedo) {
+-                            foreach(i, _; p.textures[1..$]) {
+-                                if (p.textures[i] && (p.textures[i].width != p.textures[0].width || p.textures[i].height != p.textures[0].height)) {
+-                                    p.textures[i] = null;
+-                                }
+-                            }
+-                        }
++                        incApplyTextureToSlot(p, usage, file);
+                     } catch(Exception ex) {
+-                        if (ex.msg[0..11] == "unsupported") {
++                        if (ex.msg.startsWith("unsupported")) {
+                             incDialog(__("Error"), _("%s is not supported").format(file));
+                         } else incDialog(__("Error"), ex.msg);
+                     }
+diff --git a/source/creator/panels/nodes.d b/source/creator/panels/nodes.d
+index a007543..72e4009 100644
+--- a/source/creator/panels/nodes.d
++++ b/source/creator/panels/nodes.d
+@@ -86,7 +86,7 @@ protected:
+         }
+     }
+ 
+-    void recalculateNodeOrigin(Node node, bool recursive = true) {
++    public void recalculateNodeOrigin(Node node, bool recursive = true) {
+         auto mgroup = cast(MeshGroup)node;
+         auto drawable = cast(Drawable)node;
+ 
+diff --git a/source/creator/panels/parameters.d b/source/creator/panels/parameters.d
+index 6103f26..efce012 100644
+--- a/source/creator/panels/parameters.d
++++ b/source/creator/panels/parameters.d
+@@ -79,7 +79,7 @@ private {
+         }
+     }
+ 
+-    void mirrorAll(Parameter param, uint axis) {
++    public void mirrorAll(Parameter param, uint axis) {
+         auto action = new ParameterChangeBindingsAction("Mirror All", param, null);
+         foreach(ParameterBinding binding; param.bindings) {
+             uint xCount = param.axisPointCount(0);
+@@ -97,7 +97,7 @@ private {
+         incActionPush(action);
+     }
+ 
+-    void mirroredAutofill(Parameter param, uint axis, float min, float max) {
++    public void mirroredAutofill(Parameter param, uint axis, float min, float max) {
+         incActionPushGroup();
+         auto action = new ParameterChangeBindingsAction("Mirror Auto Fill", param, null);
+ 
+@@ -235,13 +235,17 @@ private {
+         refreshBindingList(param);
+     }
+ 
+-    void convertTo2D(Parameter param) {
++    public void convertTo2D(Parameter param) {
+         auto action = new GroupAction();
+ 
+         auto newParam = new ExParameter(param.name, true);
+         newParam.uuid = param.uuid;
+         newParam.min  = vec2(param.min.x, param.min.x);
+         newParam.max  = vec2(param.max.x, param.max.x);
++        newParam.defaults = vec2(param.defaults.x, 0);
++        newParam.value = vec2(param.value.x, 0);
++        newParam.mergeMode = param.mergeMode;
++        newParam.active = param.active;
+         long findIndex(T)(T[] array, T target) {
+             ptrdiff_t idx = array.countUntil(target);
+             return idx;
+@@ -252,22 +256,13 @@ private {
+             }
+             foreach(binding; param.bindings) {
+                 ParameterBinding b = newParam.getOrAddBinding(binding.getTarget().node, binding.getName());
++                b.interpolateMode = binding.interpolateMode;
+                 auto srcKeyIndex  = param.findClosestKeypoint(param.unmapValue(vec2(key, 0)));
+                 auto destKeyIndex = newParam.findClosestKeypoint(newParam.unmapValue(vec2(key, newParam.min.y)));
+                 binding.copyKeypointToBinding(srcKeyIndex, b, destKeyIndex);
+             }
+         }
+-        auto index = incActivePuppet().parameters.countUntil(param);
+-        if (index >= 0) {
+-            action.addAction(new ParameterRemoveAction(param, &incActivePuppet().parameters));
+-            action.addAction(new ParameterAddAction(newParam, &incActivePuppet().parameters));
+-            incActivePuppet().parameters[index] = newParam;
+-            if (auto prevParam = cast(ExParameter)param) {
+-                auto parent = prevParam.getParent();
+-                prevParam.setParent(null);
+-                newParam.setParent(parent);
+-            }
+-        }
++        action.addAction(new ParameterReplaceAction(param, newParam));
+         incActionPush(action);
+     }
+ 
+@@ -1084,18 +1079,7 @@ protected:
+                 incActionPush(new ParameterAddAction(param, &incActivePuppet().parameters));
+             }
+             if (igMenuItem(__("Add Mouth Shape"), "", false, true)) {
+-                Parameter param = new ExParameter(
+-                    "Mouth #%d\0".format(parameters.length),
+-                    true
+-                );
+-                param.min = vec2(-1, 0);
+-                param.max = vec2(1, 1);
+-                param.insertAxisPoint(0, 0.25);
+-                param.insertAxisPoint(0, 0.5);
+-                param.insertAxisPoint(0, 0.6);
+-                param.insertAxisPoint(1, 0.3);
+-                param.insertAxisPoint(1, 0.5);
+-                param.insertAxisPoint(1, 0.6);
++                Parameter param = incCreateMouthShape("Mouth #%d\0".format(parameters.length));
+                 incActivePuppet().parameters ~= param;
+                 incActionPush(new ParameterAddAction(param, &incActivePuppet().parameters));
+             }
+@@ -1274,3 +1258,8 @@ public:
+     Generate logger frame
+ */
+ mixin incPanel!ParametersPanel;
++
++version (InochiCLI) void incCLIPasteParameter(Parameter destination, Parameter source, uint axis) {
++    cClipboardParameter=source;
++    pasteParameter(destination,axis);
++}
+diff --git a/source/creator/utils/repair.d b/source/creator/utils/repair.d
+index 93f2ddc..01b013d 100644
+--- a/source/creator/utils/repair.d
++++ b/source/creator/utils/repair.d
+@@ -26,12 +26,20 @@ void incAttemptRepairPuppet(Puppet p) {
+     Attempts to repair puppet IDs
+ */
+ void incRegenerateNodeIDs(Node n) {
+-    foreach(child; n.children) {
+-        incRegenerateNodeIDs(child);
++    void regenerate(Node node) {
++        foreach (child; node.children) regenerate(child);
++        node.forceSetUUID(inCreateUUID());
++    }
++    regenerate(n);
++    // Mask bindings serialize a cached UUID rather than their live source pointer.
++    auto puppet = n.puppet;
++    if (puppet !is null) foreach (node; puppet.findNodesType!Node(puppet.root)) {
++        void refreshMasks(T)(T target) {
++            foreach (ref mask; target.masks) if (mask.maskSrc !is null) mask.maskSrcUUID = mask.maskSrc.uuid;
++        }
++        if (auto part = cast(Part)node) refreshMasks(part);
++        else if (auto composite = cast(Composite)node) refreshMasks(composite);
+     }
+-
+-    // Force a new UUID
+-    n.forceSetUUID(inCreateUUID());
+ }
+ 
+ void incPremultTextures(Puppet p) {
+diff --git a/source/creator/utils/transform.d b/source/creator/utils/transform.d
+index a5d57e8..45861b3 100644
+--- a/source/creator/utils/transform.d
++++ b/source/creator/utils/transform.d
+@@ -70,8 +70,13 @@ ParameterBinding incBindingGetPairFor(Parameter param, Node target, FlipPair pai
+     */
+ void incBindingAutoFlip(ParameterBinding binding, ParameterBinding srcBinding, vec2u index, uint axis, bool extrapolation = true, ulong[]* selected = null) {
+ 
+-    T extrapolateValueAt(T)(ParameterBindingImpl!T binding, vec2u index, uint axis) {
+-        vec2 offset = binding.parameter.getKeypointOffset(index);
++    vec2 targetOffset;
++    if (auto value = cast(ValueParameterBinding)binding) targetOffset = value.parameter.getKeypointOffset(index);
++    else if (auto deform = cast(DeformationParameterBinding)binding) targetOffset = deform.parameter.getKeypointOffset(index);
++    else return;
++
++    T extrapolateValueAt(T)(ParameterBindingImpl!T source, vec2u index, uint axis) {
++        vec2 offset = targetOffset;
+ 
+         switch (axis) {
+             case -1: offset = vec2(1, 1) - offset; break;
+@@ -83,16 +88,16 @@ void incBindingAutoFlip(ParameterBinding binding, ParameterBinding srcBinding, v
+ 
+         vec2u srcIndex;
+         vec2 subOffset;
+-        binding.parameter.findOffset(offset, srcIndex, subOffset);
++        source.parameter.findOffset(offset, srcIndex, subOffset);
+ 
+-        return binding.interpolate(srcIndex, subOffset);            
++        return source.interpolate(srcIndex, subOffset);
+     }
+-    T interpolateValueAt(T)(ParameterBindingImpl!T binding, vec2u index, uint axis) {
+-        vec2 offset = binding.parameter.getKeypointOffset(index);
++    T interpolateValueAt(T)(ParameterBindingImpl!T source, vec2u index, uint axis) {
++        vec2 offset = targetOffset;
+         vec2u srcIndex;
+         vec2 subOffset;
+-        binding.parameter.findOffset(offset, srcIndex, subOffset);
+-        return binding.interpolate(srcIndex, subOffset);            
++        source.parameter.findOffset(offset, srcIndex, subOffset);
++        return source.interpolate(srcIndex, subOffset);
+     }
+ 
+     Deformation* getMaskedDeformation(Deformation* deform, Deformation* newDeform, ulong[]* selected) {
+diff --git a/source/creator/viewport/common/automesh/contours.d b/source/creator/viewport/common/automesh/contours.d
+index 378bb44..e3496f9 100644
+--- a/source/creator/viewport/common/automesh/contours.d
++++ b/source/creator/viewport/common/automesh/contours.d
+@@ -26,6 +26,19 @@ class ContourAutoMeshProcessor : AutoMeshProcessor {
+     float[] SCALES = [1, 1.1, 0.9, 0.7, 0.4, 0.2, 0.1];
+     string presetName;
+ public:
++    void configureCLI(float sampling, float threshold, float distance, float[] rings, float maxDistance = -1) { SAMPLING_STEP=sampling; maskThreshold=threshold; MIN_DISTANCE=distance; MAX_DISTANCE=maxDistance>0?maxDistance:sampling*2; SCALES=rings; }
++    void setPreset(string name) {
++        import std.exception : enforce;
++        switch(name) {
++            case "normal": presetName="Normal parts";configureCLI(50,15,16,[1,1.1,.9,.7,.4,.2,.1,0]);break;
++            case "detailed": presetName="Detailed mesh";configureCLI(32,15,16,[1,1.1,.9,.7,.4,.2,.1,0]);break;
++            case "large": presetName="Large parts";configureCLI(80,15,24,[1,1.1,.9,.7,.4,.2,.1,0]);break;
++            case "small": presetName="Small parts";configureCLI(24,15,12,[1,1.1,.6,.2]);break;
++            case "thin": presetName="Thin and minimum parts";configureCLI(12,1,4,[1]);break;
++            case "edges": presetName="Preserve edges";configureCLI(24,15,8,[1,1.2,.8]);break;
++            default:enforce(false,"Unknown contour preset: "~name);
++        }
++    }
+     override IncMesh autoMesh(Drawable target, IncMesh mesh, bool mirrorHoriz = false, float axisHoriz = 0, bool mirrorVert = false, float axisVert = 0) {
+         if (MAX_DISTANCE < 0)
+             MAX_DISTANCE = SAMPLING_STEP * 2;
+@@ -183,57 +196,12 @@ public:
+         incText(_("Presets"));
+         igIndent();
+         if(igBeginCombo(__("Presets"), __(presetName))) {
+-            if (igSelectable(__("Normal parts"))) {
+-                presetName = "Normal parts";
+-                SAMPLING_STEP = 50;
+-                maskThreshold = 15;
+-                MIN_DISTANCE = 16;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1, 1.1, 0.9, 0.7, 0.4, 0.2, 0.1, 0];
+-            }
+-            if (igSelectable(__("Detailed mesh"))) {
+-                presetName = "Detailed mesh";
+-                SAMPLING_STEP = 32;
+-                maskThreshold = 15;
+-                MIN_DISTANCE = 16;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1, 1.1, 0.9, 0.7, 0.4, 0.2, 0.1, 0];
+-            }
+-            if (igSelectable(__("Large parts"))) {
+-                presetName = "Large parts";
+-                SAMPLING_STEP = 80;
+-                maskThreshold = 15;
+-                MIN_DISTANCE = 24;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1, 1.1, 0.9, 0.7, 0.4, 0.2, 0.1, 0];
+-            }
+-            if (igSelectable(__("Small parts"))) {
+-                presetName = "Small parts";
+-                SAMPLING_STEP = 24;
+-                maskThreshold = 15;
+-                MIN_DISTANCE = 12;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1, 1.1, 0.6, 0.2];
+-
+-            }
+-            if (igSelectable(__("Thin and minimum parts"))) {
+-                presetName = "Thin and minimum parts";
+-                SAMPLING_STEP = 12;
+-                maskThreshold = 1;
+-                MIN_DISTANCE = 4;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1];
+-
+-            }
+-            if (igSelectable(__("Preserve edges"))) {
+-                presetName = "Preserve edges";
+-                SAMPLING_STEP = 24;
+-                maskThreshold = 15;
+-                MIN_DISTANCE = 8;
+-                MAX_DISTANCE = SAMPLING_STEP * 2;
+-                SCALES = [1, 1.2, 0.8];
+-
+-            }
++            if (igSelectable(__("Normal parts"))) setPreset("normal");
++            if (igSelectable(__("Detailed mesh"))) setPreset("detailed");
++            if (igSelectable(__("Large parts"))) setPreset("large");
++            if (igSelectable(__("Small parts"))) setPreset("small");
++            if (igSelectable(__("Thin and minimum parts"))) setPreset("thin");
++            if (igSelectable(__("Preserve edges"))) setPreset("edges");
+             igEndCombo();
+         }
+         igUnindent();
+diff --git a/source/creator/viewport/common/automesh/grid.d b/source/creator/viewport/common/automesh/grid.d
+index f399531..bff772c 100644
+--- a/source/creator/viewport/common/automesh/grid.d
++++ b/source/creator/viewport/common/automesh/grid.d
+@@ -24,6 +24,30 @@ class GridAutoMeshProcessor : AutoMeshProcessor {
+     float xSegments = 2, ySegments = 2;
+     float margin = 0.1;
+ public:
++    void configureCLI(float[] x, float[] y, float threshold) { scaleX=x; scaleY=y; maskThreshold=threshold; }
++    void configureSegments(float x,float y,float border) {
++        import std.exception : enforce;
++        enforce(x>=2&&x<=20&&y>=2&&y<=20&&border>=0&&border<=1,"Invalid grid segmentation");
++        xSegments=x;ySegments=y;margin=border;divideAxes();
++    }
++        void divideAxes() {
++            scaleY.length = 0;
++            scaleX.length = 0;
++            if (margin != 0) {
++                scaleY ~= -margin;
++                scaleX ~= -margin;
++            }
++            foreach (y; 0..(ySegments+1)) {
++                scaleY ~= y / ySegments;
++            }
++            foreach (x; 0..(xSegments+1)) {
++                scaleX ~= x / xSegments;
++            }
++            if (margin != 0) {
++                scaleY ~= 1 + margin;
++                scaleX ~= 1 + margin;
++            }
++        }
+     override
+     IncMesh autoMesh(Drawable target, IncMesh mesh, bool mirrorHoriz = false, float axisHoriz = 0, bool mirrorVert = false, float axisVert = 0) {
+         Part part = cast(Part)target;
+@@ -137,24 +161,7 @@ public:
+             }
+         }
+ 
+-        void divideAxes() {
+-            scaleY.length = 0;
+-            scaleX.length = 0;
+-            if (margin != 0) {
+-                scaleY ~= -margin;
+-                scaleX ~= -margin;
+-            }
+-            foreach (y; 0..(ySegments+1)) {
+-                scaleY ~= y / ySegments;
+-            }
+-            foreach (x; 0..(xSegments+1)) {                
+-                scaleX ~= x / xSegments;
+-            }
+-            if (margin != 0) {
+-                scaleY ~= 1 + margin;
+-                scaleX ~= 1 + margin;
+-            }
+-        }
++
+ 
+         igPushID("CONFIGURE_OPTIONS");
+ 
+diff --git a/source/creator/viewport/common/mesh.d b/source/creator/viewport/common/mesh.d
+index d673bfd..b20dfcf 100644
+--- a/source/creator/viewport/common/mesh.d
++++ b/source/creator/viewport/common/mesh.d
+@@ -1083,4 +1083,13 @@ public:
+     void copyFromMeshData(MeshData data) {
+         mImport(data);
+     }
+-}
+\ No newline at end of file
++}
++// UV layout used by the Creator vertex editor after applying a mesh.
++void incLayoutMeshUV(Drawable drawable, ref MeshData data) {
++    data.uvs=data.vertices.dup;
++    if(auto part=cast(Part)drawable){
++        import std.exception : enforce;
++        auto texture=part.textures[0];enforce(texture !is null,"Texture layout requires an albedo texture");
++        foreach(ref uv;data.uvs){uv.x/=cast(float)texture.width;uv.y/=cast(float)texture.height;uv+=vec2(0.5,0.5);}
++    }
++}
+diff --git a/source/creator/viewport/common/mesheditor/operations/base.d b/source/creator/viewport/common/mesheditor/operations/base.d
+index 623e6f9..d2b319d 100644
+--- a/source/creator/viewport/common/mesheditor/operations/base.d
++++ b/source/creator/viewport/common/mesheditor/operations/base.d
+@@ -30,6 +30,16 @@ import std.algorithm.mutation;
+ import std.algorithm.searching;
+ import std.stdio;
+ 
++// Shared coordinate reflection for viewport tools and explicit CLI edits.
++vec2 incMirrorPoint(uint axis, vec2 point, vec2 origin) {
++    return origin + incMirrorDelta(axis, point - origin);
++}
++vec2 incMirrorDelta(uint axis, vec2 delta) {
++    assert(axis <= 3, "bad mirror axis");
++    return vec2((axis & 1) ? -delta.x : delta.x,
++                (axis & 2) ? -delta.y : delta.y);
++}
++
+ class IncMeshEditorOne {
+ public:
+     abstract void substituteMeshVertices(MeshVertex* meshVertex);
+@@ -145,37 +155,11 @@ public:
+         updateMirrorSelected();
+     }
+ 
+-    vec2 mirrorH(vec2 point) {
+-        return 2 * vec2(mirrorOrigin.x, 0) + vec2(-point.x, point.y);
+-    }
+-
+-    vec2 mirrorV(vec2 point) {
+-        return 2 * vec2(0, mirrorOrigin.x) + vec2(point.x, -point.y);
+-    }
+-
+-    vec2 mirrorHV(vec2 point) {
+-        return 2 * mirrorOrigin - point;
+-    }
+-
+-    vec2 mirror(uint axis, vec2 point) {
+-        switch (axis) {
+-            case 0: return point;
+-            case 1: return mirrorH(point);
+-            case 2: return mirrorV(point);
+-            case 3: return mirrorHV(point);
+-            default: assert(false, "bad axis");
+-        }
+-    }
+-
+-    vec2 mirrorDelta(uint axis, vec2 point) {
+-        switch (axis) {
+-            case 0: return point;
+-            case 1: return vec2(-point.x, point.y);
+-            case 2: return vec2(point.x, -point.y);
+-            case 3: return vec2(-point.x, -point.y);
+-            default: assert(false, "bad axis");
+-        }
+-    }
++    vec2 mirrorH(vec2 point) { return incMirrorPoint(1, point, mirrorOrigin); }
++    vec2 mirrorV(vec2 point) { return incMirrorPoint(2, point, mirrorOrigin); }
++    vec2 mirrorHV(vec2 point) { return incMirrorPoint(3, point, mirrorOrigin); }
++    vec2 mirror(uint axis, vec2 point) { return incMirrorPoint(axis, point, mirrorOrigin); }
++    vec2 mirrorDelta(uint axis, vec2 delta) { return incMirrorDelta(axis, delta); }
+ 
+     ulong mirrorVertex(uint axis, ulong vtxIndex) {
+         if (axis == 0) return vtxIndex;
+diff --git a/source/creator/viewport/common/mesheditor/operations/drawable.d b/source/creator/viewport/common/mesheditor/operations/drawable.d
+index 7af0863..23bc4cf 100644
+--- a/source/creator/viewport/common/mesheditor/operations/drawable.d
++++ b/source/creator/viewport/common/mesheditor/operations/drawable.d
+@@ -117,19 +117,7 @@ public:
+         MeshData data = mesh.export_();
+         data.fixWinding();
+ 
+-        // Fix UVs
+-        foreach(i; 0..data.uvs.length) {
+-            if (Part part = cast(Part)target) {
+-
+-                // Texture 0 is always albedo texture
+-                auto tex = part.textures[0];
+-
+-                // By dividing by width and height we should get the values in UV coordinate space.
+-                data.uvs[i].x /= cast(float)tex.width;
+-                data.uvs[i].y /= cast(float)tex.height;
+-                data.uvs[i] += vec2(0.5, 0.5);
+-            }
+-        }
++        incLayoutMeshUV(target, data);
+ 
+         if (data.vertices.length != target.vertices.length)
+             vertexMapDirty = true;
+@@ -488,7 +476,7 @@ protected:
+             return;
+         deformation = drawable.deformation.dup;
+         auto param = incArmedParameter();
+-        auto binding = cast(DeformationParameterBinding)(param? param.getBinding(drawable, "deform"): null);
++        auto binding = (param ? cast(DeformationParameterBinding)param.getBinding(drawable, "deform") : null);
+         if (binding is null) {
+             deformation = drawable.deformation.dup;
+             
+diff --git a/source/creator/viewport/common/mesheditor/tools/brush.d b/source/creator/viewport/common/mesheditor/tools/brush.d
+index 5e07411..5493557 100644
+--- a/source/creator/viewport/common/mesheditor/tools/brush.d
++++ b/source/creator/viewport/common/mesheditor/tools/brush.d
+@@ -208,16 +208,7 @@ class BrushTool : NodeSelect {
+                 weights = impl.getVerticesInBrush(impl.mousePos, currentBrush);
+             auto diffPos = impl.mousePos - impl.lastMousePos;
+             ulong[] selected = (impl.selected && impl.selected.length > 0)? impl.selected: array(iota(weights.length));
+-            foreach (idx; selected) {
+-                float weight = weights[idx];
+-                MeshVertex* v = impl.getVerticesByIndex([idx])[0];
+-                if (v is null)
+-                    continue;
+-                if (weight > 0) {
+-                    v.position += diffPos * weight;
+-                    impl.markActionDirty();
+-                }
+-            }
++            if(incApplyBrushDelta(impl.getVerticesByIndex(array(iota(weights.length))),selected,weights,diffPos))impl.markActionDirty();
+ 
+             impl.refreshMesh();
+             changed = true;
+@@ -248,7 +239,7 @@ class BrushToolInfo : ToolInfoBase!BrushTool {
+     bool displayToolOptions(bool deformOnly, VertexToolMode toolMode, IncMeshEditorOne[Node] editors) {
+         igPushStyleVar(ImGuiStyleVar.ItemSpacing, ImVec2(0, 0));
+         igPushStyleVar(ImGuiStyleVar.WindowPadding, ImVec2(4, 4));
+-        auto brushTool = cast(BrushTool)(editors.length == 0 ? null: editors.values()[0].getTool());
++        BrushTool brushTool; if (editors.length) brushTool = cast(BrushTool)editors.values()[0].getTool();
+             igBeginGroup();
+                 if (incButtonColored("", ImVec2(0, 0), (brushTool !is null && !brushTool.getFlow())? ImVec4.init : ImVec4(0.6, 0.6, 0.6, 1))) { // path definition
+                     foreach (e; editors) {
+@@ -295,4 +286,14 @@ class BrushToolInfo : ToolInfoBase!BrushTool {
+     override VertexToolMode mode() { return VertexToolMode.Brush; };
+     override string icon() { return "";}
+     override string description() { return _("Brush Tool");}
+-}
+\ No newline at end of file
++}
++// Apply the same sampled stroke displacement in the viewport and CLI.
++bool incApplyBrushDelta(MeshVertex*[] vertices, ulong[] selected, float[] weights, vec2 delta) {
++    bool changed;
++    foreach(index;selected){
++        if(index>=vertices.length||index>=weights.length)continue;
++        auto vertex=vertices[index];
++        if(vertex !is null && weights[index]>0){vertex.position+=delta*weights[index];changed=true;}
++    }
++    return changed;
++}
+diff --git a/source/creator/viewport/common/mesheditor/tools/pathdeform.d b/source/creator/viewport/common/mesheditor/tools/pathdeform.d
+index c7c4072..0c60ed4 100644
+--- a/source/creator/viewport/common/mesheditor/tools/pathdeform.d
++++ b/source/creator/viewport/common/mesheditor/tools/pathdeform.d
+@@ -24,6 +24,20 @@ import std.algorithm.searching;
+ import std.stdio;
+ import std.math;
+ 
++void incRotatePath(CatmullSpline path,int pivot,int dragged,float angle) {
++    import std.exception : enforce;
++    enforce(pivot>=0&&pivot<path.points.length&&dragged>=0&&dragged<path.points.length&&pivot!=dragged,"Invalid path rotation controls");
++    int step=dragged>pivot?1:-1;
++    auto center=path.points[pivot].position;
++    auto rotation=mat4.identity.translate(vec3(-center,0)).rotateZ(angle).translate(vec3(center,0));
++    for(int index=pivot+step;index>=0&&index<path.points.length;index+=step)path.points[index].position=(rotation*vec4(path.points[index].position,0,1)).xy;
++}
++void incShiftPathPoint(CatmullSpline original,CatmullSpline target,int index,vec2 position) {
++    import std.exception : enforce;
++    enforce(index>=0&&index<target.points.length,"Invalid path point");
++    target.points[index].position=original.eval(original.findClosestPointOffset(position));
++}
++
+ class PathDeformTool : NodeSelect {
+     CatmullSpline path;
+     uint pathDragTarget;
+@@ -283,17 +297,11 @@ class PathDeformTool : NodeSelect {
+             float prevAngle = atan2(prevRelPosition.y, prevRelPosition.x);
+             float angle     = atan2(relPosition.y, relPosition.x);
+             float relAngle = angle - prevAngle;
+-            mat4 rotate = mat4.identity.translate(vec3(-editPath.points[lockedPoint].position, 0)).rotateZ(relAngle).translate(vec3(editPath.points[lockedPoint].position, 0));
+-
+-            for (int i = lockedPoint + step; 0 <= i && i < editPath.points.length; i += step) {
+-                editPath.points[i].position = (rotate * vec4(editPath.points[i].position, 0, 1)).xy;
+-            }
++            incRotatePath(editPath,lockedPoint,pathDragTarget,relAngle);
+ 
+         } else if (action == PathDeformActionID.Shift || action == PathDeformActionID.StartShiftTransform) {
+             if(pathDragTarget != -1){
+-                float off = path.findClosestPointOffset(impl.mousePos);
+-                vec2 pos  = path.eval(off);
+-                editPath.points[pathDragTarget].position = pos;
++                incShiftPathPoint(path,editPath,pathDragTarget,impl.mousePos);
+             }
+         
+         } else if (action == PathDeformActionID.Transform || action == PathDeformActionID.StartTransform) {
+@@ -403,7 +411,7 @@ class PathDeformToolInfo : ToolInfoBase!PathDeformTool {
+     bool displayToolOptions(bool deformOnly, VertexToolMode toolMode, IncMeshEditorOne[Node] editors) { 
+         igPushStyleVar(ImGuiStyleVar.ItemSpacing, ImVec2(0, 0));
+         igPushStyleVar(ImGuiStyleVar.WindowPadding, ImVec2(4, 4));
+-        auto deformTool = cast(PathDeformTool)(editors.length == 0 ? null: editors.values()[0].getTool());
++        PathDeformTool deformTool; if (editors.length) deformTool = cast(PathDeformTool)editors.values()[0].getTool();
+         igBeginGroup();
+             if (incButtonColored("", ImVec2(0, 0), (deformTool !is null && deformTool.mode == PathDeformTool.Mode.Define)? ImVec4.init : ImVec4(0.6, 0.6, 0.6, 1))) { // path definition
+                 foreach (e; editors) {
+diff --git a/source/creator/viewport/common/mesheditor/tools/point.d b/source/creator/viewport/common/mesheditor/tools/point.d
+index c56543a..ea07b33 100644
+--- a/source/creator/viewport/common/mesheditor/tools/point.d
++++ b/source/creator/viewport/common/mesheditor/tools/point.d
+@@ -66,7 +66,7 @@ class PointTool : NodeSelect {
+                         impl.foreachMirror((uint axis) {
+                             MeshVertex *v = impl.getVerticesByIndex([impl.mirrorVertex(axis, select)])[0];
+                             if (v is null) return;
+-                            meshAction.moveVertex(v, v.position + impl.mirror(axis, mousePos - impl.lastMousePos));
++                            meshAction.moveVertex(v, v.position + impl.mirrorDelta(axis, mousePos - impl.lastMousePos));
+                         });
+                     }
+                 }
+@@ -481,7 +481,8 @@ class PointToolInfo : ToolInfoBase!PointTool {
+         if (deformOnly) {
+ 
+         } else {
+-            auto pointTool = cast(PointTool)(editors.length == 0 ? null: editors.values()[0].getTool());
++            PointTool pointTool;
++            if (editors.length) pointTool = cast(PointTool)editors.values()[0].getTool();
+             igBeginGroup();
+                 if (incButtonColored("", ImVec2(0, 0), (pointTool !is null && !pointTool.isAutoConnect())? ImVec4.init : ImVec4(0.6, 0.6, 0.6, 1))) {
+                 foreach (e; editors) {
+diff --git a/source/creator/viewport/common/mesheditor/tools/select.d b/source/creator/viewport/common/mesheditor/tools/select.d
+index ed34aae..c434713 100644
+--- a/source/creator/viewport/common/mesheditor/tools/select.d
++++ b/source/creator/viewport/common/mesheditor/tools/select.d
+@@ -177,7 +177,7 @@ class NodeSelect : Tool, Draggable {
+                     if (v is null) return;
+                     impl.updateAddVertexAction(v);
+                     impl.markActionDirty();
+-                    v.position += impl.mirror(axis, mousePos - impl.lastMousePos);
++                    v.position += impl.mirrorDelta(axis, mousePos - impl.lastMousePos);
+                 });
+             }
+             if (impl.selected.length > 0)
+diff --git a/source/creator/viewport/common/spline.d b/source/creator/viewport/common/spline.d
+index de1205f..9c07a27 100644
+--- a/source/creator/viewport/common/spline.d
++++ b/source/creator/viewport/common/spline.d
+@@ -179,6 +179,10 @@ public:
+         return mat4.identity();
+     }
+ 
++    mat4 exportTarget(ref IncMesh mesh, size_t i, ref vec2 vtx, vec2 tangent, vec2 initTangent) {
++        return exportTarget(mesh, i, vtx, tangent, initTangent, mat4.identity, vec2(0));
++    }
++
+     mat4 exportTarget(ref IncMesh mesh, size_t i, ref vec2 vtx, vec2 tangent, vec2 initTangent, mat4 invert, vec2 deformation) {
+         mesh.vertices[i].position = (invert * vec4(vtx, 0, 1)).xy - deformation;
+         return mat4.identity();
+diff --git a/source/creator/widgets/dialog.d b/source/creator/widgets/dialog.d
+index 214d913..92fd1b2 100644
+--- a/source/creator/widgets/dialog.d
++++ b/source/creator/widgets/dialog.d
+@@ -173,6 +173,7 @@ void incDialog(const(char)* title, string body_, DialogLevel level = DialogLevel
+     Creates a dialog
+ */
+ void incDialog(const(char)* tag, const(char)* title, string body_, DialogLevel level = DialogLevel.Error, DialogButtons btns = DialogButtons.OK, void* userData = null) {
++    version (InochiCLI) throw new Exception(body_);
+     import std.string : toStringz;
+     int btncount = 0;
+     if ((btns & DialogButtons.OK) == 1) btncount++;
+diff --git a/source/creator/windows/flipconfig.d b/source/creator/windows/flipconfig.d
+index 96af88a..99bd581 100644
+--- a/source/creator/windows/flipconfig.d
++++ b/source/creator/windows/flipconfig.d
+@@ -155,12 +155,12 @@ private:
+ 
+     FlipPair* active = null;
+ 
+-    void apply() {
+-        flipPairs = pairs;
++    public void apply() {
++        incSetFlipPairs(pairs);
+     }
+ 
+ 
+-    void autoPair(string part1, string part2) {
++    public void autoPair(string part1, string part2) {
+         foreach(i, ref Node node; nodes) {
+             string node1Name = node.name.toStringz.fromStringz;
+             string targetName = node1Name.replace(part1, part2);
+@@ -520,3 +520,10 @@ public:
+     }
+ }
+ 
++
++void incSetFlipPairs(FlipPair[] pairs) {
++    flipPairs=pairs;
++    activePuppet=incActivePuppet();
++    if (pairs.length) incDumpFlipConfig(activePuppet);
++    else activePuppet.extData.remove(FlipConfigPath);
++}
+diff --git a/source/creator/windows/imgexport.d b/source/creator/windows/imgexport.d
+index 16b9338..f6e00c9 100644
+--- a/source/creator/windows/imgexport.d
++++ b/source/creator/windows/imgexport.d
+@@ -133,6 +133,9 @@ protected:
+     }
+ 
+ public:
++    void exportCLI(ExCamera camera, bool alpha, bool post) {
++        selectedCamera=camera; transparency=alpha; postprocessing=post; export_();
++    }
+     this(string outFile) {
+         super(_("Export Image..."));
+ 
+diff --git a/source/creator/windows/kramerge.d b/source/creator/windows/kramerge.d
+index a4d9e48..203e25b 100644
+--- a/source/creator/windows/kramerge.d
++++ b/source/creator/windows/kramerge.d
+@@ -13,6 +13,7 @@ import creator.ext;
+ import std.string;
+ import creator.utils.link;
+ import inochi2d;
++import std.json : JSONValue;
+ import i18n;
+ import kra;
+ import std.uni : toLower;
+@@ -153,9 +154,7 @@ private:
+             }
+             part.rebuffer(data);
+         }
+-        foreach (Node child; node.children) {
+-            updatePart(child);
+-        }
++
+     }
+ 
+     void apply() {
+@@ -165,6 +164,7 @@ private:
+         vec2i docCenter = vec2i(document.width/2, document.height/2);
+         auto puppet = incActivePuppet();
+ 
++        Node[] changed;
+         // Apply all the bindings to the node tree.
+         foreach(binding; bindings) {
+             if (binding.ignore) continue;
+@@ -208,20 +208,21 @@ private:
+                     }
+                 }
+ 
+-                (cast(ExPart)binding.node).textures[0].dispose();
+                 (cast(ExPart)binding.node).textures[0] = binding.layerTexture;
+                 (cast(ExPart)binding.node).layerPath = binding.layerPath;
++                changed ~= binding.node;
+             } else {
+                 auto part = incCreateExPart(binding.layerTexture, binding.node, binding.layer.name);
+                 part.layerPath = binding.layerPath;
+                 part.localTransform.translation = localPosition;
++                changed ~= part;
+             }
+         }
+         
+         // Unload KRA, we're done with it
+         destroy(document);
+         puppet.root.transformChanged();
+-        updatePart(puppet.root);
++        foreach (node; changed) updatePart(node);
+ 
+         // Repopulate texture slots, removing unused textures
+         puppet.populateTextureSlots();
+@@ -446,6 +447,40 @@ protected:
+     }
+ 
+ public:
++    JSONValue planCLI(string layerSearch, string nodeSearch, bool unmappedOnly) {
++        import std.json;
++        import std.algorithm.searching : canFind;
++        JSONValue[] layers, targets;
++        foreach (binding; bindings) {
++            if (unmappedOnly && binding.replaceTexture) continue;
++            if (layerSearch.length && !binding.indexableName.canFind(layerSearch.toLower)) continue;
++            layers ~= JSONValue(["layer":JSONValue(binding.layerPath),"name":JSONValue(binding.layer.name),"node":JSONValue(binding.node.uuid),"replace":JSONValue(binding.replaceTexture),"ignore":JSONValue(binding.ignore)]);
++        }
++        foreach (part; incActivePuppet().getAllParts()) {
++            if (nodeSearch.length && !part.name.toLower.canFind(nodeSearch.toLower)) continue;
++            targets ~= JSONValue(["uuid":JSONValue(part.uuid),"name":JSONValue(part.name)]);
++        }
++        return JSONValue(["layers":JSONValue(layers),"targets":JSONValue(targets)]);
++    }
++    void ignoreCLI(string layerPath, bool ignored) {
++        foreach (binding; bindings) if (binding.layerPath == layerPath) { binding.ignore=ignored;return; }
++        import std.exception : enforce;
++        enforce(false,"Layer path not found: "~layerPath);
++    }
++    void mapCLI(string layerPath, Node target, bool replaceTexture, bool ignore) {
++        bool found;
++        foreach(binding;bindings) if(binding.layerPath==layerPath){
++            binding.node=target;binding.replaceTexture=replaceTexture;binding.ignore=ignore;found=true;
++        }
++        import std.exception : enforce;
++        enforce(found,"Layer path not found: "~layerPath);
++        if(replaceTexture) enforce(cast(ExPart)target !is null,"Replacement requires Part");
++    }
++    void applyCLI(bool rename, bool translate, bool resort, bool unmappedOnly) {
++        renameMapped=rename; retranslateMapped=translate; resortModel=resort; onlyUnmapped=unmappedOnly;
++        foreach (binding; bindings) if (unmappedOnly && binding.replaceTexture) binding.ignore=true;
++        apply();
++    }
+     ~this() { }
+ 
+     this(string path) {
+diff --git a/source/creator/windows/paramsplit.d b/source/creator/windows/paramsplit.d
+index 8ff8b91..87abb9c 100644
+--- a/source/creator/windows/paramsplit.d
++++ b/source/creator/windows/paramsplit.d
+@@ -13,8 +13,10 @@ import creator;
+ import std.string;
+ import creator.utils.link;
+ import inochi2d;
++import creator.ext;
++import std.algorithm;
+ import i18n;
+-import std.array : insertInPlace;
++import std.array : insertInPlace, array;
+ 
+ struct ParamMapping {
+     size_t idx;
+@@ -23,6 +25,24 @@ struct ParamMapping {
+     bool take;
+ }
+ 
++// Both callers move complete node bindings while preserving parameter data and ownership.
++Parameter incSplitParameter(Parameter source, Node[] targets, string name) {
++    auto puppet = incActivePuppet();
++    auto copy = source.dup;
++    copy.name = name;
++    copy.bindings = copy.bindings.filter!(b => targets.canFind(b.getNode())).array;
++    if (!copy.bindings.length) return null;
++    foreach (binding; source.bindings.dup) {
++        if (targets.canFind(binding.getNode())) source.removeBinding(binding);
++    }
++    if (auto original = cast(ExParameter)source) {
++        if (auto extended = cast(ExParameter)copy) extended.setParent(original.parent);
++    }
++    auto index = puppet.parameters.countUntil(source);
++    puppet.parameters.insertInPlace(index + 1, copy);
++    return copy;
++}
++
+ class ParamSplitWindow : Window {
+ private:
+     size_t idx;
+@@ -45,25 +65,9 @@ private:
+     }
+ 
+     void apply() {
+-        Parameter newParam = new Parameter(param.name~_(" (Split)"), param.isVec2);
+-        foreach(axis; 0..param.axisPoints.length) {
+-            newParam.axisPoints[axis] = param.axisPoints[axis].dup;
+-        }
+-        
+-
+-        // TODO: remap
+-        ParameterBinding[] oldParamBindings;
+-        ParameterBinding[] newParamBindings;
+-        foreach(ref mappingNode; mappings) {
+-            if (!mappingNode.take) oldParamBindings ~= mappingNode.bindings;
+-            else newParamBindings ~= mappingNode.bindings;
+-        }
+-
+-        if (newParamBindings.length > 0) {
+-            param.bindings = oldParamBindings;
+-            newParam.bindings = newParamBindings;
+-            incActivePuppet().parameters.insertInPlace(idx+1, newParam);
+-        }
++        Node[] targets;
++        foreach (mapping; mappings) if (mapping.take) targets ~= mapping.node;
++        incSplitParameter(param, targets, param.name ~ _(" (Split)"));
+ 
+         this.close();
+     }
+diff --git a/source/creator/windows/psdmerge.d b/source/creator/windows/psdmerge.d
+index 1f727fe..6670d7e 100644
+--- a/source/creator/windows/psdmerge.d
++++ b/source/creator/windows/psdmerge.d
+@@ -17,6 +17,7 @@ import i18n;
+ import psd;
+ import std.uni : toLower;
+ import std.stdio : File;
++import std.json : JSONValue;
+ 
+ /**
+     Binding between layer and node
+@@ -149,9 +150,7 @@ private:
+             }
+             part.rebuffer(data);
+         }
+-        foreach (Node child; node.children) {
+-            updatePart(child);
+-        }
++
+     }
+ 
+     void apply() {
+@@ -161,6 +160,7 @@ private:
+         vec2i docCenter = vec2i(document.width/2, document.height/2);
+         auto puppet = incActivePuppet();
+ 
++        Node[] changed;
+         // Apply all the bindings to the node tree.
+         foreach(binding; bindings) {
+             if (binding.ignore) continue;
+@@ -204,20 +204,21 @@ private:
+                     }
+                 }
+ 
+-                (cast(ExPart)binding.node).textures[0].dispose();
+                 (cast(ExPart)binding.node).textures[0] = binding.layerTexture;
+                 (cast(ExPart)binding.node).layerPath = binding.layerPath;
++                changed ~= binding.node;
+             } else {
+                 auto part = incCreateExPart(binding.layerTexture, binding.node, binding.layer.name);
+                 part.layerPath = binding.layerPath;
+                 part.localTransform.translation = localPosition;
++                changed ~= part;
+             }
+         }
+         
+         // Unload PSD, we're done with it
+         destroy(document);
+         puppet.root.transformChanged();
+-        updatePart(puppet.root);
++        foreach (node; changed) updatePart(node);
+ 
+         // Repopulate texture slots, removing unused textures
+         puppet.populateTextureSlots();
+@@ -442,6 +443,40 @@ protected:
+     }
+ 
+ public:
++    JSONValue planCLI(string layerSearch, string nodeSearch, bool unmappedOnly) {
++        import std.json;
++        import std.algorithm.searching : canFind;
++        JSONValue[] layers, targets;
++        foreach (binding; bindings) {
++            if (unmappedOnly && binding.replaceTexture) continue;
++            if (layerSearch.length && !binding.indexableName.canFind(layerSearch.toLower)) continue;
++            layers ~= JSONValue(["layer":JSONValue(binding.layerPath),"name":JSONValue(binding.layer.name),"node":JSONValue(binding.node.uuid),"replace":JSONValue(binding.replaceTexture),"ignore":JSONValue(binding.ignore)]);
++        }
++        foreach (part; incActivePuppet().getAllParts()) {
++            if (nodeSearch.length && !part.name.toLower.canFind(nodeSearch.toLower)) continue;
++            targets ~= JSONValue(["uuid":JSONValue(part.uuid),"name":JSONValue(part.name)]);
++        }
++        return JSONValue(["layers":JSONValue(layers),"targets":JSONValue(targets)]);
++    }
++    void ignoreCLI(string layerPath, bool ignored) {
++        foreach (binding; bindings) if (binding.layerPath == layerPath) { binding.ignore=ignored;return; }
++        import std.exception : enforce;
++        enforce(false,"Layer path not found: "~layerPath);
++    }
++    void mapCLI(string layerPath, Node target, bool replaceTexture, bool ignore) {
++        bool found;
++        foreach(binding;bindings) if(binding.layerPath==layerPath){
++            binding.node=target;binding.replaceTexture=replaceTexture;binding.ignore=ignore;found=true;
++        }
++        import std.exception : enforce;
++        enforce(found,"Layer path not found: "~layerPath);
++        if(replaceTexture) enforce(cast(ExPart)target !is null,"Replacement requires Part");
++    }
++    void applyCLI(bool rename, bool translate, bool resort, bool unmappedOnly) {
++        renameMapped=rename; retranslateMapped=translate; resortModel=resort; onlyUnmapped=unmappedOnly;
++        foreach (binding; bindings) if (unmappedOnly && binding.replaceTexture) binding.ignore=true;
++        apply();
++    }
+     ~this() { }
+ 
+     this(string path) {
+diff --git a/source/creator/ext/automation.d b/source/creator/ext/automation.d
+new file mode 100644
+--- /dev/null
++++ b/source/creator/ext/automation.d
+@@ -0,0 +1,49 @@
++module creator.ext.automation;
++import inochi2d;
++import inochi2d.core.automation.sine;
++import inochi2d.core.automation.phys;
++
++// These fields are editable runtime state; retain them in Creator projects too.
++mixin template AutomationProjectFields() {
++    override void serializeSelf(ref InochiSerializer serializer) {
++        super.serializeSelf(serializer);
++        if (!enabled) { serializer.putKey("enabled"); serializer.putValue(enabled); }
++        static if (is(typeof(this.phase))) {
++            if (phase != 0) { serializer.putKey("phase"); serializer.putValue(phase); }
++        }
++    }
++    override void deserializeSelf(Fghj data) {
++        static if (is(typeof(this.phase))) {
++            if (!data["speed"].isEmpty) data["speed"].deserializeValue(speed);
++            int kind;
++            auto error=data["sine_type"].deserializeValue(kind);
++            if (!error) {
++                import std.exception : enforce;
++                enforce(kind>=0 && kind<=2,"Invalid sine type");sineType=cast(typeof(sineType))kind;
++            } else data["sine_type"].deserializeValue(sineType);
++        } else super.deserializeSelf(data);
++        if (!data["enabled"].isEmpty) data["enabled"].deserializeValue(enabled);
++        static if (is(typeof(this.phase))) {
++            if (!data["phase"].isEmpty) data["phase"].deserializeValue(phase);
++        }
++        // The 0.8.6 SDK reads AutomationBinding.range from the axis field.
++        size_t index;
++        foreach (row; data["bindings"].byElement) {
++            if (index < bindings.length) bindings[index].range.deserialize(row["range"]);
++            index++;
++        }
++    }
++    ref AutomationBinding[] projectBindings() { return bindings; }
++}
++@TypeId("sine") class ExSineAutomation : SineAutomation {
++    this(Puppet parent) { super(parent); }
++    mixin AutomationProjectFields;
++}
++@TypeId("physics") class ExPhysicsAutomation : PhysicsAutomation {
++    this(Puppet parent) { super(parent); }
++    mixin AutomationProjectFields;
++}
++void incRegisterExAutomation() {
++    inRegisterAutomationType!ExSineAutomation();
++    inRegisterAutomationType!ExPhysicsAutomation();
++}
+diff --git a/source/app.d b/source/app.d
+--- a/source/app.d
++++ b/source/app.d
+@@ -47,7 +47,7 @@
+     }
+ }
+ 
+-int main(string[] args)
++version (InochiCLI) {} else int main(string[] args)
+ {
+     try {
+         incSettingsLoad();

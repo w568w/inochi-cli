@@ -1,0 +1,12 @@
+/.dub/
+/vendor/
+/out/
+/tests/results/
+__pycache__/
+*.pyc
+*.o
+imgui.ini
+settings.json
+/build/
+/dist/
+/bin/
