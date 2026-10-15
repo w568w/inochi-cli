@@ -26,17 +26,17 @@ jobs:
             platform: windows-x86_64
             tests: 'OFF'
             triplet: x64-windows
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
           - os: macos-15
             platform: macos-arm64
             tests: 'OFF'
             triplet: arm64-osx-dynamic
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=arm64-osx-dynamic -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=arm64-osx-dynamic -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
           - os: macos-15-intel
             platform: macos-x86_64
             tests: 'OFF'
             triplet: x64-osx-dynamic
-            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-osx-dynamic -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
+            cmake: -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-osx-dynamic -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
     defaults:
@@ -57,7 +57,6 @@ jobs:
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
           vcpkgJsonGlob: vcpkg.json
-          runVcpkgInstall: true
       - uses: actions/setup-python@v7
         if: runner.os == 'Linux'
         with:
