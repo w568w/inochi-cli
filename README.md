@@ -55,6 +55,10 @@ Edits write to the file given by `-o`. Use `--in-place` to overwrite the input.
 
 ## Installation
 
+### Download a build
+
+Open a successful [Package workflow run](https://github.com/w568w/inochi-cli/actions/workflows/package.yml) and download the artifact for your platform: Linux x86-64, Windows x86-64, macOS Apple Silicon or macOS Intel. Extract the ZIP and add its `bin` directory to your `PATH`.
+
 ### Build from source
 
 You need CMake 3.24+, Git, Dub, a D compiler and a C++17 compiler, plus the SDL2, FreeType and OpenGL development libraries. CMake downloads the pinned source dependencies during configuration.
