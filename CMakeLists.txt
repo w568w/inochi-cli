@@ -10,8 +10,8 @@ find_package(Freetype REQUIRED)
 find_package(OpenGL REQUIRED)
 
 # Creator and SDK share a fixed format/algorithm baseline; only their patches vary.
-FetchContent_Declare(creator GIT_REPOSITORY https://github.com/Inochi2D/inochi-creator.git GIT_TAG 371e5f4e21117102dbecc82371bfd9a6e2f5df02 GIT_SUBMODULES "" PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/creator.patch)
-FetchContent_Declare(sdk GIT_REPOSITORY https://github.com/Inochi2D/inochi2d.git GIT_TAG dda3a8f005f808104caa43183ab8753fb989e30f GIT_SUBMODULES "" PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/sdk.patch)
+FetchContent_Declare(creator GIT_REPOSITORY https://github.com/Inochi2D/inochi-creator.git GIT_TAG 371e5f4e21117102dbecc82371bfd9a6e2f5df02 GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/creator.patch)
+FetchContent_Declare(sdk GIT_REPOSITORY https://github.com/Inochi2D/inochi2d.git GIT_TAG dda3a8f005f808104caa43183ab8753fb989e30f GIT_SUBMODULES "" GIT_CONFIG core.autocrlf=false PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard HEAD COMMAND ${GIT_EXECUTABLE} apply --index ${CMAKE_CURRENT_SOURCE_DIR}/patches/sdk.patch)
 FetchContent_Declare(bindings GIT_REPOSITORY https://github.com/Inochi2D/i2d-imgui.git GIT_TAG c6a78f4a7510fd31a86998b7ceedfc2916ecfae0 GIT_SUBMODULES "" SOURCE_SUBDIR source)
 FetchContent_Declare(cimgui GIT_REPOSITORY https://github.com/Inochi2D/cimgui.git GIT_TAG bb241882da8294b648ac1f9be1aca0421eaa4191 GIT_SUBMODULES imgui SOURCE_SUBDIR source)
 FetchContent_MakeAvailable(creator sdk bindings cimgui)
@@ -54,6 +54,9 @@ if(WIN32 OR APPLE)
     include(InstallRequiredSystemLibraries)
     install(CODE "
         include(BundleUtilities)
+        function(gp_item_default_embedded_path_override item path)
+            set("\${path}" "@executable_path" PARENT_SCOPE)
+        endfunction()
         fixup_bundle(\"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/inochi${CMAKE_EXECUTABLE_SUFFIX}\" \"\"
             \"$<TARGET_FILE_DIR:SDL2::SDL2>;$<TARGET_FILE_DIR:Freetype::Freetype>\")
     ")
