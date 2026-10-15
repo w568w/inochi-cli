@@ -58,7 +58,7 @@ if(WIN32 OR APPLE)
             set(\${path} @executable_path PARENT_SCOPE)
         endfunction()
         fixup_bundle(\"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/inochi${CMAKE_EXECUTABLE_SUFFIX}\" \"\"
-            \"$<TARGET_FILE_DIR:SDL2::SDL2>;$<TARGET_FILE_DIR:Freetype::Freetype>\")
+            \"$<TARGET_FILE_DIR:inochi-native>\")
     ")
 endif()
 include(CTest)
