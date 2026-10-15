@@ -55,7 +55,7 @@ if(WIN32 OR APPLE)
     install(CODE "
         include(BundleUtilities)
         function(gp_item_default_embedded_path_override item path)
-            set("\${path}" "@executable_path" PARENT_SCOPE)
+            set(\${path} @executable_path PARENT_SCOPE)
         endfunction()
         fixup_bundle(\"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/inochi${CMAKE_EXECUTABLE_SUFFIX}\" \"\"
             \"$<TARGET_FILE_DIR:SDL2::SDL2>;$<TARGET_FILE_DIR:Freetype::Freetype>\")
