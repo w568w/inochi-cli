@@ -61,12 +61,14 @@ jobs:
       - name: Test
         if: runner.os == 'Linux'
         run: ctest --test-dir build --output-on-failure
-      - name: Install and smoke test
-        run: |
-          cmake --install build --prefix "$PWD/stage"
-          stage/bin/inochi capabilities --json > capabilities.json
+      - name: Install
+        run: cmake --install build --prefix "$PWD/stage"
+      - name: Smoke test
+        timeout-minutes: 1
+        run: stage/bin/inochi capabilities --json > capabilities.json
       - name: Check macOS model loading
         if: runner.os == 'macOS'
+        timeout-minutes: 1
         run: |
           stage/bin/inochi new project new -o smoke.inx
           stage/bin/inochi smoke.inx project check
