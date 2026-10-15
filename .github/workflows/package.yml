@@ -45,7 +45,6 @@ jobs:
       - uses: dlang-community/setup-dlang@v2
         with:
           compiler: ldc-1.43.0
-          dub: 1.42.0
       - name: Install native dependencies
         run: ${{ matrix.install }}
       - uses: actions/setup-python@v7
